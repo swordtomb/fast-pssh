@@ -1,22 +1,11 @@
 #!/usr/bin/python3
 import subprocess
+import fcntl
+import threading
 
 from lib.manager import Manager
 from lib.task import Task
 from lib.cli import base_parser
-
-import threading
-
-
-class FooThread(threading.Thread):
-
-    def run(self):
-        print('exec job\n')
-
-t1 = FooThread()
-t2 = FooThread()
-t1.start()
-t2.start()
 
 
 def parse_args():
@@ -27,15 +16,29 @@ def parse_args():
 
 
 def do_pssh():
-    host = ''
-    cmd = ['ssh', '-T', host]
+    host_list = []
 
     manager = Manager()
-    task = Task()
-    manager.add_task(task)
+    fit(manager, host_list)
 
-    subprocess.run(cmd)
+    manager.run()
+
+
+def fit(manager, host_list, remote_cmd):
+    for host, user, port in host_list:
+        cmd = gen_cmd(host, user, port, remote_cmd)
+
+        task = Task(cmd)
+        manager.add_task(task)
+
+
+def gen_cmd(host, user, port, remote_cmd):
+    cmd = ['ssh', '-T', host]
+    cmd += ['-l', user]
+    cmd += ['-p', port]
+    cmd.append(remote_cmd)
+    return cmd
+
 
 if __name__ == '__main__':
-
     pass
