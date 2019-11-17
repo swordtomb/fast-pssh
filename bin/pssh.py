@@ -3,9 +3,9 @@ import subprocess
 import fcntl
 import threading
 
-from lib.manager import Manager
-from lib.task import Task
-from lib.cli import base_parser
+from fpslib.manager import Manager
+from fpslib.task import Task
+from fpslib.cli import base_parser
 
 
 def parse_args():
