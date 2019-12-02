@@ -2,12 +2,14 @@ import logging
 import os
 
 from ssh2.session import Session
-from gevent import socket
+from gevent import socket, get_hub
 
 from ...exceptions import SessionError, UnknownHostException, ConnectionErrorException, PKeyFileError, \
     AuthenticationException
 from ssh2.error_codes import LIBSSH2_ERROR_EAGAIN
 from socket import gaierror as sock_gaierror, error as sock_error
+
+THREAD_POOL = get_hub().threadpool
 
 
 class SSHClient:
@@ -22,6 +24,8 @@ class SSHClient:
         self.keepalive_seconds = 60
         self._connect(self.host, self.port)
         self._init()
+
+        _auth_thread_pool = True
 
     def __del__(self):
         self.disconnect()
@@ -55,7 +59,7 @@ class SSHClient:
     def run_command(self, command):
         channel = self.open_session()
         channel.execute(command)
-        return self.read_output_buffer(channel.read), self.read_output_buffer(channel.read_stderr)
+        return self.read_output_buffer(channel.read), self.read_output_buffer(channel.read_stderr), self.host
 
     def auth(self):
         self._password_auth()
