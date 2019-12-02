@@ -10,6 +10,11 @@ class ConnectionErrorException(Exception):
     pass
 
 
+class AuthenticationException(Exception):
+    """Raised on authentication error (user/password/ssh key error)"""
+    pass
+
+
 class SessionError(Exception):
     """Raised on errors establishing SSH session"""
     pass
