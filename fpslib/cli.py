@@ -11,6 +11,10 @@ def base_parser():
                         action='append',
                         help='host name',
                         metavar='HOST_STRING')
+    parser.add_argument("-p", '--par', dest="par")
+    parser.add_argument("-o", "--outdir", dest="outdir")
+    parser.add_argument("-i", "--inline", dest="inline")
+    parser.add_argument("-c", dest="cmd", action="store")
 
     return parser
 

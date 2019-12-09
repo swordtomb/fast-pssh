@@ -14,7 +14,7 @@ class ParallelSSHClient(BaseParallelSSHClient):
         return self.host_clients[host].run_command(command)
 
     def _make_ssh_client(self, host):
-        # TODO 搞懂锁
+        # with 相当于 acquire release
         with self._clients_lock:
             self.host_clients[host] = SSHClient(host, self.user, self.password, self.port)
 

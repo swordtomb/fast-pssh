@@ -6,13 +6,13 @@ import threading
 from fpslib.manager import Manager
 from fpslib.task import Task
 from fpslib.cli import base_parser
+from fpssh.clients.native.parallel import ParallelSSHClient
 
 
 def parse_args():
     parser = base_parser()
-    opts, args = parser.parse_args()
-
-    return opts, args
+    args = parser.parse_args()
+    return args
 
 
 def do_pssh():
@@ -22,6 +22,14 @@ def do_pssh():
     fit(manager, host_list)
 
     manager.run()
+
+
+def do_fpssh(cmd):
+    hosts = ["tail1"]
+    user = "root"
+    password = "456"
+    client = ParallelSSHClient(hosts, user, password, 22)
+    return client.run_command(cmd)
 
 
 def fit(manager, host_list, remote_cmd):
@@ -41,4 +49,10 @@ def gen_cmd(host, user, port, remote_cmd):
 
 
 if __name__ == '__main__':
-    pass
+    args = parse_args()
+
+
+    #do_pssh()
+    outputs = do_fpssh(args.cmd)
+    for host, output in outputs.items():
+        print(host, list(output[0]))

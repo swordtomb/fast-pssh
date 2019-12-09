@@ -18,7 +18,7 @@ setup(
             'fpssh = fpssh:cli'
         ]
     },
-    scripts=["fpssh.py"],
+    scripts=["fpssh_cli.py"],
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",

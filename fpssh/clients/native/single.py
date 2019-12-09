@@ -16,7 +16,8 @@ class SSHClient:
     def __init__(self, host, user, password, port=22):
         self.session = None
         self.sock = None
-        self.pkey = None
+        pkey = os.path.expanduser('~/.ssh/id_rsa')
+        self.pkey = pkey
         self.host = host
         self.port = port
         self.user = user
@@ -62,8 +63,8 @@ class SSHClient:
         return self.read_output_buffer(channel.read), self.read_output_buffer(channel.read_stderr), self.host
 
     def auth(self):
-        self._password_auth()
-        # self.session.userauth_publickey_fromfile(self.user, self.pkey)
+        #self._password_auth()
+        self.session.userauth_publickey_fromfile(self.user, self.pkey)
 
     def _pkey_path(self, pkey):
         pkey = os.path.expanduser(pkey)
