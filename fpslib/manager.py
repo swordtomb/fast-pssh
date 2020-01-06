@@ -1,7 +1,11 @@
+import fcntl
 import os
 import select
 import threading
 import queue
+import select
+import sys
+import signal
 from enum import Enum
 
 
@@ -14,6 +18,9 @@ class Manager:
         self.done = []
         self.wlist = {}
         self.queue = queue.Queue()
+
+        self.askpass = ""
+        self.timeout = ""
 
     def run(self):
         # 有输出路径拉起线程写数据
@@ -37,12 +44,59 @@ class Manager:
             self.running.append(task)
             task.run()
 
+    def check_timeout(self):
+        for task in self.running:
+            timeleft = self.timeout - task.elapsed()
+            if timeleft <= 0:
+                task.timedout()
+
 
 class Sig(Enum):
     EOF = -1
     OPEN = 0
     KILL = 1
     WRITE = 2
+
+
+class IOMap:
+
+    def __init__(self):
+        self.readmap = {}
+        self.writemap = {}
+        readfd, writefd = os.pipe()
+        fcntl.fcntl(writefd, fcntl.F_SETFL, os.O_NONBLOCK)
+        self.register_read(readfd, self.wakeup_handler)
+        signal.set_wakeup_fd(writefd)
+
+    def register_read(self, fd, handler):
+        self.readmap[fd] = handler
+
+    def register_write(self, fd, handler):
+        self.writemap[fd] = handler
+
+    def unregister(self, fd):
+        if fd in self.readmap:
+            del self.readmap[fd]
+        if fd in self.writemap:
+            del self.writemap
+
+    def poll(self):
+        if not self.readmap and not self.writemap:
+            return
+
+        try:
+            pass
+        except select.error:
+            _, e, _ = sys.exc_info()
+        for fd in rlist:
+            handler = self.readmap[fd]
+            handler(fd, self)
+        for fd in wlist:
+            handler = self.writemap[fd]
+            handler(fd, self)
+
+    def wakeup_handler(self, fd, iomap):
+        pass
 
 
 class Writer(threading.Thread):
