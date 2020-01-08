@@ -1,3 +1,5 @@
+from errno import EINTR
+
 import fcntl
 import os
 import select
@@ -7,6 +9,8 @@ import select
 import sys
 import signal
 from enum import Enum
+
+READ_SIZE = 1 << 16
 
 
 class Manager:
@@ -22,11 +26,15 @@ class Manager:
         self.askpass = ""
         self.timeout = ""
 
+        self.iomap = make_iomap()
+
     def run(self):
         # 有输出路径拉起线程写数据
-        if self.outdir:
+        if self.outdir or self.errdir:
             writer = Writer()
             writer.start()
+        else:
+            writer = None
 
         for task in self.tasks:
             stdout = task.run()
@@ -42,7 +50,7 @@ class Manager:
     def _start_tasks(self):
         for task in self.tasks:
             self.running.append(task)
-            task.run()
+            task.start()
 
     def check_timeout(self):
         for task in self.running:
@@ -51,11 +59,7 @@ class Manager:
                 task.timedout()
 
 
-class Sig(Enum):
-    EOF = -1
-    OPEN = 0
-    KILL = 1
-    WRITE = 2
+
 
 
 class IOMap:
@@ -64,8 +68,9 @@ class IOMap:
         self.readmap = {}
         self.writemap = {}
         readfd, writefd = os.pipe()
-        fcntl.fcntl(writefd, fcntl.F_SETFL, os.O_NONBLOCK)
         self.register_read(readfd, self.wakeup_handler)
+
+        fcntl.fcntl(writefd, fcntl.F_SETFL, os.O_NONBLOCK)
         signal.set_wakeup_fd(writefd)
 
     def register_read(self, fd, handler):
@@ -80,14 +85,22 @@ class IOMap:
         if fd in self.writemap:
             del self.writemap
 
-    def poll(self):
+    def poll(self, timeout=None):
         if not self.readmap and not self.writemap:
             return
+        rlist = list(self.readmap)
+        wlist = list(self.writemap)
 
         try:
-            pass
+            rlist, wlist, _ = select.select(rlist, wlist, [], timeout)
         except select.error:
             _, e, _ = sys.exc_info()
+            errno = e.args[0]
+            if errno == EINTR:
+                return
+            else:
+                raise
+
         for fd in rlist:
             handler = self.readmap[fd]
             handler(fd, self)
@@ -96,7 +109,49 @@ class IOMap:
             handler(fd, self)
 
     def wakeup_handler(self, fd, iomap):
+        try:
+            os.read(fd, READ_SIZE)
+        except (OSError, IOError):
+            _, e, _ = sys.exc_info()
+            errno, message = e.args
+            raise
+
+
+class PollIOMap(IOMap):
+
+    def __init__(self):
+        self._poller = select.poll()
+        super(PollIOMap, self).__init__()
+
+    def register_read(self, fd, handler):
         pass
+
+    def register_write(self, fd, handler):
+        pass
+
+    def unregister(self, fd):
+        pass
+
+    def poll(self, timeout=None):
+        pass
+
+
+class EpollIOMap:
+    pass
+
+
+def make_iomap():
+    if hasattr(select, 'poll'):
+        return PollIOMap()
+    else:
+        return IOMap()
+
+
+class Sig(Enum):
+    EOF = -1
+    OPEN = 0
+    KILL = 1
+    WRITE = 2
 
 
 class Writer(threading.Thread):
