@@ -23,10 +23,14 @@ class Manager:
         self.wlist = {}
         self.queue = queue.Queue()
 
+        self.current_node_num = 0
+        self.node_count = 0
         self.askpass = ""
         self.timeout = ""
 
         self.iomap = make_iomap()
+
+        # TODO Ask Pass
 
     def run(self):
         # 有输出路径拉起线程写数据
@@ -46,20 +50,74 @@ class Manager:
 
     def add_task(self, task):
         self.tasks.append(task)
+        self.node_count += 1
+
+    def update_task(self, writer):
+        """收集完成的Task，启动下一批"""
+        # Mask signal Python Bug
+        # http://bugs.python.org/issue1068268
+        # 因为sigprocmask 不在 stdlib，所以调用
+        # 因为信号是masked，所以要每次调用reap_tasks()
+        running = True
+        while running:
+            self.clear_sigchld_handler()
+            self._start_tasks_once(writer)
+            self.set_sigchld_handler()
+            running = self.reap_tasks()
+
+    def clear_sigchld_handler(self):
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+
+    def set_sigchld_handler(self):
+        signal.signal(signal.SIGCHLD, self.handle_sigchld)
+        # EINTR
+        if hasattr(signal, "siginterrupt"):
+            signal.siginterrupt(signal.SIGCHLD, False)
+
+    def handle_sigchld(self):
+        """sigchld handler 去使 set_wakeup_fd 工作"""
+        for task in self.running:
+            if task.proc:
+                task.proc.poll()
+        # 一些 UNIX系统会重置 SIGCHLD handler 为 SIG_DFL所以得再设置一次
+        self.set_sigchld_handler()
+
+    def reap_task(self):
+
+        still_running = []
+        finished_count = 0
+        for task in self.running:
+            if task.is_running():
+                still_running.append(task)
+            else:
+                self.finished(task)
+                finished_count += 1
+        self.running = still_running
+
+        return finished_count
+
+    def finished(self, task):
+        self.done.append(task)
+        n = len(self.done)
+        task.report(n)
 
     def _start_tasks(self):
         for task in self.tasks:
             self.running.append(task)
             task.start()
 
+    def _start_tasks_once(self, writer):
+        while 0 < len(self.tasks) and len(self.running) <= self.limit:
+            task = self.tasks.pop(0)
+            self.running.append(task)
+            task.start(self.current_node_num, self.node_count, self.iomap, writer)
+            self.current_node_num += 1
+
     def check_timeout(self):
         for task in self.running:
             timeleft = self.timeout - task.elapsed()
             if timeleft <= 0:
                 task.timedout()
-
-
-
 
 
 class IOMap:
@@ -70,7 +128,9 @@ class IOMap:
         readfd, writefd = os.pipe()
         self.register_read(readfd, self.wakeup_handler)
 
+        # 文件描述符没数据也直接返回不会阻塞等待数据
         fcntl.fcntl(writefd, fcntl.F_SETFL, os.O_NONBLOCK)
+        # 信号到达，将信号值写入文件描述符，用于唤醒poll或select
         signal.set_wakeup_fd(writefd)
 
     def register_read(self, fd, handler):
@@ -83,7 +143,7 @@ class IOMap:
         if fd in self.readmap:
             del self.readmap[fd]
         if fd in self.writemap:
-            del self.writemap
+            del self.writemap[fd]
 
     def poll(self, timeout=None):
         if not self.readmap and not self.writemap:
@@ -172,7 +232,7 @@ class Writer(threading.Thread):
                 self.files[file].close()
             if sig == Sig.WRITE:
                 if self.files[file] is None:
-                    self.files[file] = open(file, 'w', buffering=1)
+                    self.files[file] = open(file, 'wb', buffering=1)
                 self.files[file].write(data)
                 self.files[file].flush()
 
