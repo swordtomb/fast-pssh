@@ -33,20 +33,39 @@ class Manager:
         # TODO Ask Pass
 
     def run(self):
-        # 有输出路径拉起线程写数据
-        if self.outdir or self.errdir:
-            writer = Writer()
-            writer.start()
-        else:
-            writer = None
+        try:
+            # 有输出路径拉起线程写数据
+            if self.outdir or self.errdir:
+                writer = Writer()
+                writer.start()
+            else:
+                writer = None
 
-        for task in self.tasks:
-            stdout = task.run()
-            self.wlist[task.host] = stdout
+            self.set_sigchld_handler()
+
+            try:
+                self.update_task(writer)
+                wait = None
+                while self.running or self.tasks:
+                    if wait is None or wait < 1:
+                        wait = 1
+                    self.iomap.poll(wait)
+                    self.update_task(writer)
+                    wait = self.check_timeout()
+
+            except KeyboardInterrupt:
+                #
+                self.interrupt_clean()
+
+        except KeyboardInterrupt:
+            # 不打印错误信息直接先后走，结束程序
+            pass
 
         if writer:
             writer.signal_quit()
             writer.join()
+
+        return [task.exit_code for task in self.done]
 
     def add_task(self, task):
         self.tasks.append(task)
@@ -96,6 +115,16 @@ class Manager:
 
         return finished_count
 
+    def interrupt_clean(self):
+        """keyboard中断后，清理"""
+        for task in self.running:
+            task.interrupted()
+            self.finished(task)
+
+        for task in self.running:
+            task.cancel()
+            self.finished(task)
+
     def finished(self, task):
         self.done.append(task)
         n = len(self.done)
@@ -114,11 +143,20 @@ class Manager:
             self.current_node_num += 1
 
     def check_timeout(self):
+        """杀死超时进程，返回最小剩余时间"""
+        if self.timeout <= 0:
+            return None
+        min_timeleft = None
         for task in self.running:
             timeleft = self.timeout - task.elapsed()
             if timeleft <= 0:
                 task.timedout()
-
+            elif min_timeleft is None or timeleft < min_timeleft:
+                min_timeleft = timeleft
+        if min_timeleft is None:
+            return 0
+        else:
+            return max(0, min_timeleft)
 
 class IOMap:
 

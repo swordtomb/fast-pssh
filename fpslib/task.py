@@ -194,6 +194,24 @@ class Task:
         if file:
             self.writer.close(file)
 
+    def timedout(self):
+        if not self.killed:
+            self._kill()
+            self.failures.append("Timed out")
+
+    def cancel(self):
+        """未启动时取消Task"""
+        self.failures.append("Canceled")
+
+    def elapsed(self):
+        """进程耗时"""
+        return time.time() - self.timestamp
+
+    def interrupted(self):
+        if not self.killed:
+            self._kill()
+            self.failures.append("Interrupted")
+
     def report(self, n):
         """任务完成后，打印结果"""
         error_msg = ", ".join(self.failures)
