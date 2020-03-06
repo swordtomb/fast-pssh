@@ -2,35 +2,43 @@ from errno import EINTR
 
 import fcntl
 import os
-import select
 import threading
 import queue
 import select
 import sys
 import signal
-from enum import Enum
+from enum import Enum, unique
+from fpslib.askpass_server import PasswordServer
 
 READ_SIZE = 1 << 16
 
 
 class Manager:
-    def __init__(self):
-        self.limit = 2
-        self.outdir = None
+    def __init__(self, opts):
+        self.limit = opts.par
+        self.timeout = opts.timeout
+
+        self.outdir = opts.outdir
+        self.errdir = opts.errdir
+        self.iomap = make_iomap()
+
+        # self.next_nodenum = 0
+        # self.numnodes = 0
+        self.current_node_num = 0
+        self.node_count = 0
         self.tasks = []
         self.running = []
         self.done = []
+
         self.wlist = {}
         self.queue = queue.Queue()
 
-        self.current_node_num = 0
-        self.node_count = 0
-        self.askpass = ""
-        self.timeout = ""
 
-        self.iomap = make_iomap()
+
+
 
         # TODO Ask Pass
+        self.askpass = ""
 
     def run(self):
         try:
@@ -40,6 +48,9 @@ class Manager:
                 writer.start()
             else:
                 writer = None
+
+            if self.askpass:
+                pass_server = PasswordServer()
 
             self.set_sigchld_handler()
 
@@ -93,15 +104,20 @@ class Manager:
         if hasattr(signal, "siginterrupt"):
             signal.siginterrupt(signal.SIGCHLD, False)
 
-    def handle_sigchld(self):
-        """sigchld handler 去使 set_wakeup_fd 工作"""
+    def handle_sigchld(self, num, frame):
+        """sigchld 信号的处理函数"""
+        # poll()底层调用waitpid(pid, WNOHANG)，清理僵尸进程。
+        # 这样捕捉SIGCHLD处理僵尸进程是个标准套路。
+        # 子进程调用exit()后不会立即消失而是留下僵尸进程，父进程调用wait或waitpid。子进程才消失。
+        # 但是这一步不取返回值，在Manager.run()循环中再次调用poll取返回值。
         for task in self.running:
             if task.proc:
+                # 设置进程返回码s
                 task.proc.poll()
         # 一些 UNIX系统会重置 SIGCHLD handler 为 SIG_DFL所以得再设置一次
         self.set_sigchld_handler()
 
-    def reap_task(self):
+    def reap_tasks(self):
 
         still_running = []
         finished_count = 0
@@ -158,17 +174,21 @@ class Manager:
         else:
             return max(0, min_timeleft)
 
+
 class IOMap:
 
     def __init__(self):
         self.readmap = {}
         self.writemap = {}
+
+        # 设置 唤醒时激发的文件描述符，防止进程挂起收不到信号
         readfd, writefd = os.pipe()
         self.register_read(readfd, self.wakeup_handler)
 
         # 文件描述符没数据也直接返回不会阻塞等待数据
         fcntl.fcntl(writefd, fcntl.F_SETFL, os.O_NONBLOCK)
-        # 信号到达，将信号值写入文件描述符，用于唤醒poll或select
+        # 信号到达，将信号值写入文件描述符，用于唤醒主线程
+        # set_wakeup_fd只能在主线程调用
         signal.set_wakeup_fd(writefd)
 
     def register_read(self, fd, handler):
@@ -190,6 +210,7 @@ class IOMap:
         wlist = list(self.writemap)
 
         try:
+            # 没有I/O事件，会阻塞在这。
             rlist, wlist, _ = select.select(rlist, wlist, [], timeout)
         except select.error:
             _, e, _ = sys.exc_info()
@@ -207,12 +228,22 @@ class IOMap:
             handler(fd, self)
 
     def wakeup_handler(self, fd, iomap):
+        """
+        :param fd:
+        :param iomap:
+        :return:
+        确保 SIGCHLD 信号不会丢失
+        子进程结束会向父进程发送 SIGCHLD信号
+        """
         try:
             os.read(fd, READ_SIZE)
         except (OSError, IOError):
             _, e, _ = sys.exc_info()
-            errno, message = e.args
-            raise
+            errno, msg = e.args
+            if errno != EINTR:
+                sys.stderr.write(
+                    f"Fatal error in reading from wakeup iomap pipe: {msg}\n")
+            raise FatalError
 
 
 class PollIOMap(IOMap):
@@ -222,16 +253,36 @@ class PollIOMap(IOMap):
         super(PollIOMap, self).__init__()
 
     def register_read(self, fd, handler):
-        pass
+        super(PollIOMap, self).register_read(fd, handler)
+        self._poller.register(fd, select.POLLIN)
 
     def register_write(self, fd, handler):
-        pass
+        super(PollIOMap, self).register_write(fd, handler)
+        self._poller.register(fd, select.POLLOUT)
 
     def unregister(self, fd):
-        pass
+        super(PollIOMap, self).unregister(fd)
+        self._poller.unregister(fd)
 
     def poll(self, timeout=None):
-        pass
+        if not self.readmap and not self.writemap:
+            return
+        try:
+            event_list = self._poller.poll(timeout)
+        except select.error:
+            _, e, _ = sys.exc_info()
+            errno = e.args[0]
+            if errno == EINTR:
+                return
+            else:
+                raise
+        for fd, event in event_list:
+            if event & (select.POLLIN | select.POLLHUP):
+                handler = self.readmap[fd]
+                handler(fd, self)
+            if event & (select.POLLOUT | select.POLLERR):
+                handler = self.writemap[fd]
+                handler(fd, self)
 
 
 class EpollIOMap:
@@ -245,6 +296,7 @@ def make_iomap():
         return IOMap()
 
 
+@unique
 class Sig(Enum):
     EOF = -1
     OPEN = 0
@@ -274,7 +326,7 @@ class Writer(threading.Thread):
                 self.files[file].write(data)
                 self.files[file].flush()
 
-    def open(self, file):
+    def open_files(self, file):
         self.queue.put(Sig.OPEN, file, None)
 
     def write(self, file, data):
@@ -285,3 +337,8 @@ class Writer(threading.Thread):
 
     def quit(self):
         self.queue.put((Sig.KILL, None, None))
+
+
+class FatalError(RuntimeError):
+    """A fatal error in the PSSH Manager."""
+    pass
